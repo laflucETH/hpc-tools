@@ -1,0 +1,64 @@
+# Resource model for Boltz-2 jobs. Read by `boltz2_run.py size` and `plan`.
+#
+# TWO PARTS: timing constants (the `# @name value` lines) and memory bands (the table).
+#
+# ---- TIMING ----------------------------------------------------------------------------------
+# A shard's walltime is modelled as
+#
+#     seconds = startup_s + seconds_per_token_sample x (tokens in the shard) x (diffusion samples)
+#               + affinity_extra_s_per_input x (inputs, if the shard asks for affinity)
+#
+# and divided by steering_factor when steering is off.
+#
+# Measured on Euler 2026-11-18, SLURM jobs 21404548 / 21404551 / 21404596, all on one NVIDIA
+# GeForce RTX 4090, steering on, 2 diffusion samples, with real ColabFold alignments. Three
+# structure-only shards spanning 147-1122 tokens: two were used to fit the two constants and the
+# third was predicted to within 2.2 s. A two-point fit checked against one held-out point is
+# weak evidence, but it is a far better description than a flat per-sample rate -- the striking
+# number in that run is that a 2-input shard took 160 s while a 1-input shard took 155 s, i.e.
+# the fixed cost dominates at this size.
+#
+# startup_s covers container start, loading the 2.3 GB checkpoint, and processing the
+# alignments. It is NOT a constant of nature: deeper alignments and a slower GPU both raise it.
+# The 2026-11-17 install check, single-sequence (no alignment to process) on a TITAN RTX, spent
+# far less. Treat 120 s as "what it was for ordinary ColabFold alignments on a 4090".
+#
+# OUT-OF-SAMPLE CHECK, 2026-11-20: the first-run notebook, twice, at 1 diffusion sample (the fit
+# used 2), eight shards. On RTX 4090 the model was within -12% to +4% of the actual time. On
+# RTX 3090 the jobs took 25-41% longer than predicted. Every job finished inside its walltime,
+# which is the 1.5x margin doing its job -- but it also says the margin is not generous for a
+# 3090, and would not cover a card much slower than that.
+#
+# @startup_s 120
+# @seconds_per_token_sample 0.0670
+# @affinity_extra_s_per_input 59
+# @steering_factor 2.4
+#
+# ---- MEMORY ----------------------------------------------------------------------------------
+#   max_tokens      the band covers complexes up to this many tokens. One token is one polymer
+#                   residue (protein, DNA, RNA) or one ligand heavy atom, times the copies of
+#                   that chain.
+#   gpumem_gb       what to pass as --gres=gpumem:<N>g
+#   mem_mb_per_cpu  what to pass as --mem-per-cpu. HOST memory, not GPU memory. It grows with
+#                   inputs per shard, not only with complex size.
+#   basis           measured, or extrapolated. Read it before trusting the row.
+#
+# Memory grows with roughly the square of the token count, because the model holds a
+# token-by-token pair representation. That shape is a reason to expect the ordering below, not a
+# measurement of it.
+#
+# WHAT "measured" CAN AND CANNOT MEAN HERE. SLURM never measures GPU memory -- sacct reports host
+# MaxRSS only. So a gpumem band is confirmed only by jobs *not failing* at it, which says the
+# band is big enough and says nothing about how much smaller it could be. Raise a band only
+# after a real CUDA out-of-memory error; lower one only after deliberately testing a smaller
+# value.
+#
+# ADDING A MEASURED ROW
+#   Predict one shard, then:  python3 boltz2_run.py size --from-run <run_dir>
+#   Put the real numbers here with the job id in `source`.
+#
+max_tokens	gpumem_gb	mem_mb_per_cpu	basis	source
+400	20	9216	measured	jobs 21404548_0/_1 and 21404551_2 (147-247 tokens, 2 samples, up to 2 inputs per shard) completed at gpumem:20g on an RTX 4090, 2026-11-18. Headroom unknown: no job has been tried below 20g. Host MaxRSS was 9.5-13.4 GB of the 18 GB those jobs requested, the top of that range being the affinity shard -- but at only 2 inputs per shard, so do not read it as a ceiling for 50. In two more runs on 2026-11-20 the affinity shard reached 15.4 and 15.7 GB with ONE input (jobs 21650165_2, 21646608_2): about 86% of the request, so it is the shard closest to being killed for host memory. If an affinity shard is OOM-killed, raise --mem-per-cpu for that band first.
+800	24	9216	measured	job 21404596_3 (402 and 720 tokens in one shard, 2 samples) completed at gpumem:24g on an RTX 4090, 2026-11-18. Headroom unknown. Host MaxRSS 10.5 GB of 18 GB.
+1500	40	12288	extrapolated	no measurement in this band. The one hard fact nearby is an opposite bound: proteins over ~800 residues ran out of GPU memory at 20g in an earlier production run.
+3000	80	16384	extrapolated	no measurement in this band, and 80g cards are scarce. Before submitting anything this large, predict ONE input and read the real usage back with `size --from-run`.

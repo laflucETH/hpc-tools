@@ -1,0 +1,130 @@
+#!/bin/bash
+# =============================================================================
+# boltz2: run Boltz-2 from the shared Apptainer image.
+#
+#   boltz2 predict <input> [boltz options]   `boltz predict` with the defaults below
+#   boltz2 python [args]                     the image's Python, e.g. for boltz2_run.py
+#   boltz2 exec <command> [args]             any command inside the image
+#   boltz2 info [--verify]                   which image would run and its build record;
+#                                            --verify recomputes the image's sha256
+#
+# Added to `predict` unless the caller already gives them:
+#   --use_potentials         inference-time steering, ON by default; --no_potentials turns it off.
+#                            Without it Boltz-2 2.2.1 placed the mirror image at 45 of 632 ligand
+#                            stereocentres in a 200-pair test (2026-09-24), at
+#                            2.4x the runtime cost with it on.
+#   --no_kernels             the image carries no cuEquivariance kernels
+#   --cache /opt/boltz/cache the weights and component dictionary inside the image
+# Affinity is not a command-line switch in Boltz-2: an input asks for it with a `properties:
+# - affinity: binder: <chain>` block (boltz2_run.py plan --affinity writes it).
+#
+# --use_msa_server needs network; on Euler that is the ETH proxy, loaded here if no proxy is set.
+#
+# Which image: $BOLTZ2_IMAGE if set, else $BOLTZ2_HOME/current/boltz2.sif, with BOLTZ2_HOME taken
+# from site.conf beside this script unless exported.
+# =============================================================================
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=site.conf
+. "$HERE/site.conf"
+IMAGE="${BOLTZ2_IMAGE:-$BOLTZ2_HOME/current/boltz2.sif}"
+IMAGE_CACHE=/opt/boltz/cache
+
+die() { echo "boltz2: $*" >&2; exit 2; }
+
+usage() { sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+[ $# -ge 1 ] || { usage >&2; exit 2; }
+MODE="$1"; shift
+
+info() {
+    local real; real="$(readlink -f "$IMAGE" 2>/dev/null || echo "$IMAGE")"
+    echo "image      : $IMAGE"
+    echo "resolves to: $real"
+    if [ -f "$(dirname "$real")/BUILD_INFO.txt" ]; then
+        echo "--- $(dirname "$real")/BUILD_INFO.txt"
+        cat "$(dirname "$real")/BUILD_INFO.txt"
+    else
+        echo "(no BUILD_INFO.txt beside the image)"
+    fi
+    if [ "${1:-}" = "--verify" ]; then
+        local want got
+        want="$(sed -n 's/^image_sha256 *: *//p' "$(dirname "$real")/BUILD_INFO.txt" 2>/dev/null)"
+        got="$(sha256sum "$real" | cut -d' ' -f1)"
+        echo "sha256 now : $got"
+        [ -n "$want" ] && [ "$want" = "$got" ] && echo "matches BUILD_INFO.txt" && return 0
+        echo "DOES NOT MATCH BUILD_INFO.txt ($want)" >&2; return 1
+    fi
+}
+
+if [ "$MODE" = info ]; then info "${1:-}"; exit $?; fi
+if [ "$MODE" = -h ] || [ "$MODE" = --help ]; then usage; exit 0; fi
+
+command -v apptainer >/dev/null 2>&1 || die "apptainer is not on PATH (on Euler it is /usr/bin/apptainer)"
+[ -r "$IMAGE" ] || die "no readable image at $IMAGE; set BOLTZ2_HOME or BOLTZ2_IMAGE (see site.conf)"
+
+# --- arguments ------------------------------------------------------------------------------------
+NEED_PROXY=0
+case "$MODE" in
+    predict)
+        args=() add_potentials=1 has_cache=0 has_kernels_flag=0
+        for a in "$@"; do
+            case "$a" in
+                --no_potentials)  add_potentials=0; continue ;;   # ours, not boltz's: dropped
+                --use_potentials) add_potentials=0 ;;             # given explicitly; kept once
+                --cache|--cache=*) has_cache=1 ;;
+                --no_kernels)     has_kernels_flag=1 ;;
+                --use_msa_server) NEED_PROXY=1 ;;
+            esac
+            args+=("$a")
+        done
+        [ "$add_potentials" = 1 ] && args+=(--use_potentials)
+        [ "$has_kernels_flag" = 0 ] && args+=(--no_kernels)
+        [ "$has_cache" = 0 ] && args+=(--cache "$IMAGE_CACHE")
+        CMD=(boltz predict "${args[@]}")
+        ;;
+    python) CMD=(python "$@") ;;
+    exec)   [ $# -ge 1 ] || die "exec needs a command"; CMD=("$@") ;;
+    *) usage >&2; die "unknown mode '$MODE'" ;;
+esac
+
+if [ "$NEED_PROXY" = 1 ] && [ -z "${https_proxy:-}${HTTPS_PROXY:-}" ]; then
+    if command -v module >/dev/null 2>&1 || type module >/dev/null 2>&1; then
+        module load eth_proxy >/dev/null 2>&1 || echo "boltz2: could not load eth_proxy" >&2
+    fi
+fi
+
+# --- environment inside the image -----------------------------------------------------------------
+# --cleanenv keeps the host's module environment (PYTHONPATH, LD_LIBRARY_PATH, ...) out of the image;
+# only the variables below are passed in. CUDA_VISIBLE_DEVICES matters most: without it a job on a
+# multi-GPU node could see, and use, a GPU SLURM gave to someone else.
+for v in CUDA_VISIBLE_DEVICES USER LOGNAME TMPDIR OMP_NUM_THREADS \
+         SLURM_JOB_ID SLURM_ARRAY_JOB_ID SLURM_ARRAY_TASK_ID SLURM_CPUS_PER_TASK \
+         http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY \
+         BOLTZ_MSA_USERNAME BOLTZ_MSA_PASSWORD \
+         BOLTZ2_SCRATCH_ROOT BOLTZ2_IMAGE BOLTZ2_HOME; do
+    if [ -n "${!v:-}" ]; then export "APPTAINERENV_$v=${!v}"; fi
+done
+# Writable caches (torch, triton, numba) go to scratch: the image is read-only, and home has a
+# small quota.
+RUNTIME_CACHE="${BOLTZ2_RUNTIME_CACHE:-/cluster/scratch/${USER:-unknown}/.cache/boltz2}"
+mkdir -p "$RUNTIME_CACHE" 2>/dev/null || RUNTIME_CACHE="${TMPDIR:-/tmp}/boltz2-cache-${USER:-unknown}"
+mkdir -p "$RUNTIME_CACHE"
+export APPTAINERENV_XDG_CACHE_HOME="$RUNTIME_CACHE"
+export APPTAINERENV_TRITON_CACHE_DIR="$RUNTIME_CACHE/triton"
+export APPTAINERENV_NUMBA_CACHE_DIR="$RUNTIME_CACHE/numba"
+export APPTAINERENV_MPLCONFIGDIR="$RUNTIME_CACHE/matplotlib"
+
+# Euler's Apptainer mounts neither home nor /cluster by default.
+BINDS=()
+[ -d /cluster ] && BINDS+=(--bind /cluster)
+case "${TMPDIR:-/tmp}" in /tmp*|/cluster/*) ;; *) [ -d "$TMPDIR" ] && BINDS+=(--bind "$TMPDIR") ;; esac
+GPU=()
+command -v nvidia-smi >/dev/null 2>&1 && GPU=(--nv)
+
+if [ "$MODE" = predict ]; then
+    echo "boltz2: image $(readlink -f "$IMAGE")" >&2
+    echo "boltz2: ${CMD[*]}" >&2
+fi
+exec apptainer exec --cleanenv ${GPU[@]+"${GPU[@]}"} ${BINDS[@]+"${BINDS[@]}"} "$IMAGE" "${CMD[@]}"

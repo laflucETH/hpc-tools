@@ -1,0 +1,103 @@
+Bootstrap: docker
+From: python:{{ PYTHON_TAG }}
+
+# Nesso-1 as one Apptainer image: the exact package set of requirements.lock.txt, the model
+# checkpoint, the chemical component dictionary and the ESM-2 650M weights, all read-only inside
+# the image.
+#
+# Built by build_image.sbatch, which stages the context directory this file is copied into:
+#   requirements.lock.txt
+#   cache.tar            the Hugging Face cache, tarred so its blob symlinks survive the copy
+# and records every checksum in BUILD_INFO.txt.
+#
+# The base image carries no CUDA: the torch wheels in the lock file bring their own runtime, the
+# same way the Boltz-2 image beside this one does.
+
+%arguments
+    PYTHON_TAG=3.12.8-slim-bookworm
+    PIP_PROXY=
+
+%files
+    requirements.lock.txt /opt/nesso/requirements.lock.txt
+    cache.tar /opt/nesso/cache.tar
+
+%post
+    set -eu
+    if [ -n "{{ PIP_PROXY }}" ]; then
+        export http_proxy="{{ PIP_PROXY }}" https_proxy="{{ PIP_PROXY }}"
+    fi
+    # nesso is installed from a git commit, so the build needs git and a network route out.
+    apt-get update
+    apt-get install -y --no-install-recommends git
+    rm -rf /var/lib/apt/lists/*
+
+    # --no-deps: install exactly the locked list and resolve nothing, so the image cannot pick up
+    # a newer dependency than the one the reference scores ran with.
+    python -m pip install --no-cache-dir --no-deps -r /opt/nesso/requirements.lock.txt
+    python -m pip check
+
+    # The Hugging Face cache stores each file once under blobs/ and points at it from snapshots/
+    # with a relative symlink. A plain recursive copy can turn those links into 3 GB of duplicate
+    # files or break them outright, so it travels as a tar and is unpacked here.
+    mkdir -p /opt/nesso/cache
+    tar -xf /opt/nesso/cache.tar -C /opt/nesso/cache
+    rm /opt/nesso/cache.tar
+    # .locks only exist so concurrent downloaders do not race. Nothing downloads in here.
+    rm -rf /opt/nesso/cache/huggingface/.locks
+    chmod -R a+rX /opt/nesso
+
+%environment
+    export NESSO_CACHE=/opt/nesso/cache
+    export HF_HOME=/opt/nesso/cache/huggingface
+    export HF_HUB_CACHE=/opt/nesso/cache/huggingface
+    # Nothing in here may reach the network: the weights are baked in and pinned, and a silent
+    # re-download would defeat the point of pinning them.
+    export HF_HUB_OFFLINE=1
+    export TRANSFORMERS_OFFLINE=1
+    # /cluster/home is bound at run time; packages in ~/.local must never shadow the locked ones.
+    export PYTHONNOUSERSITE=1
+
+%test
+    set -eu
+    python - <<'PY'
+import importlib.metadata as md
+import os
+from pathlib import Path
+
+for p in ('nesso', 'torch', 'numpy', 'rdkit', 'lightning', 'transformers', 'huggingface_hub'):
+    print(f'{p}=={md.version(p)}')
+
+cache = Path(os.environ['NESSO_CACHE'])
+rev = (cache / 'REVISION').read_text().strip()
+print(f'weights revision: {rev}')
+
+# Every blob a snapshot points at must resolve, or the tar lost its symlink targets.
+hub = cache / 'huggingface'
+snaps = list(hub.glob('models--*/snapshots/*/*'))
+assert snaps, 'no snapshot files in the Hugging Face cache'
+broken = [str(p) for p in snaps if not p.resolve().exists()]
+assert not broken, f'{len(broken)} unresolved blob link(s), e.g. {broken[:2]}'
+print(f'{len(snaps)} cached file(s), every blob link resolves')
+
+for want in ('models--recursionpharma--nesso', 'models--facebook--esm2_t33_650M_UR50D'):
+    assert (hub / want).is_dir(), f'missing {want}'
+print('checkpoint and ESM-2 both present')
+PY
+    # Imports the whole model stack, so a missing runtime dependency fails the build rather than
+    # the first prediction someone runs.
+    nesso predict --help >/dev/null
+    echo "nesso CLI ok"
+
+%labels
+    org.hpc-tools.tool nesso
+    org.hpc-tools.nesso-version 1.0.0
+    org.opencontainers.image.licenses Apache-2.0
+
+%help
+    Nesso-1 1.0.0 with its checkpoint, chemical component dictionary and ESM-2 650M weights.
+    Run through hpc-tools/nesso/nesso, which binds /cluster and enables the GPU.
+    BUILD_INFO.txt beside the image records what went into it.
+
+    Nesso-1 is Apache-2.0. Its licence text, and that of every dependency that ships one,
+    is inside this image under <package>.dist-info/licenses/ in site-packages; Nesso-1's own
+    is at nesso-1.0.0.dist-info/licenses/LICENSE. The wrapper scripts around it are MIT.

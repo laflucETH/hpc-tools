@@ -1,0 +1,85 @@
+Bootstrap: docker
+From: python:{{ PYTHON_TAG }}
+
+# Boltz-2 as one Apptainer image: the exact package set of requirements.lock.txt, the model weights
+# and the chemical component dictionary (mols/), all read-only inside the image.
+#
+# Built by build_image.sbatch, which stages the context directory this file is copied into:
+#   requirements.lock.txt
+#   cache/boltz2_conf.ckpt   cache/boltz2_aff.ckpt   cache/mols.tar
+# and records the pulled base-image digest and every checksum in BUILD_INFO.txt.
+
+%arguments
+    PYTHON_TAG=3.12.8-slim-bookworm
+    PIP_PROXY=
+
+%files
+    requirements.lock.txt /opt/boltz/requirements.lock.txt
+    cache/boltz2_conf.ckpt /opt/boltz/cache/boltz2_conf.ckpt
+    cache/boltz2_aff.ckpt /opt/boltz/cache/boltz2_aff.ckpt
+    cache/mols.tar /opt/boltz/mols.tar
+
+%post
+    set -eu
+    if [ -n "{{ PIP_PROXY }}" ]; then
+        export http_proxy="{{ PIP_PROXY }}" https_proxy="{{ PIP_PROXY }}"
+    fi
+    # --no-deps: install exactly the locked list and resolve nothing, so the image cannot pick up a
+    # newer dependency than the one the reference folds ran with
+    python -m pip install --no-cache-dir --no-deps -r /opt/boltz/requirements.lock.txt
+    python -m pip check
+
+    # mols/ is ~45,000 small pickles: inside the image they cost no inodes on the host.
+    tar -xf /opt/boltz/mols.tar -C /opt/boltz/cache
+    rm /opt/boltz/mols.tar
+    # boltz 2.2.1 (main.py, download_boltz2) downloads mols.tar whenever the file is absent, even
+    # when mols/ is already extracted. An empty placeholder stops that download in an image that
+    # is read-only and runs without network; mols/ itself is what predictions read.
+    : > /opt/boltz/cache/mols.tar
+    chmod -R a+rX /opt/boltz
+
+%environment
+    export BOLTZ_CACHE=/opt/boltz/cache
+    # /cluster/home is bound at run time; packages in ~/.local must never shadow the locked ones
+    export PYTHONNOUSERSITE=1
+    # boltz 2.2.1 compiles one function with @numba.njit(cache=True). Numba writes that cache next
+    # to the source file, which inside an image is read-only; it then tries the directory named
+    # here, and if that one cannot be created either it raises rather than carrying on uncached.
+    # So this must be a path that exists INSIDE the container: /tmp is mounted, a host TMPDIR such
+    # as Euler's /scratch/tmp.<jobid>.<user> is not, and naming it is what broke the first builds.
+    # The wrapper overrides this with a scratch path it also binds.
+    export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-/tmp/numba-cache-$(id -u)}"
+
+%test
+    set -eu
+    export NUMBA_CACHE_DIR=/tmp/numba-cache-build
+    python - <<'PY'
+import importlib.metadata as md
+import os
+for p in ('boltz', 'torch', 'numpy', 'rdkit', 'pytorch-lightning'):
+    print(f'{p}=={md.version(p)}')
+cache = os.environ['BOLTZ_CACHE']
+for f in ('boltz2_conf.ckpt', 'boltz2_aff.ckpt', 'mols.tar'):
+    assert os.path.exists(os.path.join(cache, f)), f
+n = len(os.listdir(os.path.join(cache, 'mols')))
+assert n > 40000, f'only {n} component files in mols/'
+print(f'mols/: {n} files')
+PY
+    # Imports the whole model stack, so it is also the check that the numba cache directory above
+    # is usable; without one, boltz 2.2.1 cannot even print its help.
+    boltz predict --help >/dev/null
+    echo "boltz CLI ok (numba cache: $NUMBA_CACHE_DIR)"
+
+%labels
+    org.hpc-tools.tool boltz2
+    org.hpc-tools.boltz-version 2.2.1
+    org.opencontainers.image.licenses MIT
+
+%help
+    Boltz-2 2.2.1 with its weights. Run through hpc-tools/boltz2/boltz2, which binds /cluster,
+    enables the GPU and applies the group's defaults. BUILD_INFO.txt beside the image records
+    what went into it.
+
+    Boltz-2 is MIT, code and weights alike. Its licence text, and that of every dependency
+    that ships one, is inside this image under <package>.dist-info/licenses/ in
+    site-packages; Boltz-2's own is at boltz-2.2.1.dist-info/licenses/LICENSE.

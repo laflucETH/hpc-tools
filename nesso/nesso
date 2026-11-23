@@ -1,0 +1,139 @@
+#!/bin/bash
+# =============================================================================
+# nesso: run Nesso-1 from the shared Apptainer image.
+#
+#   nesso predict <input dir> [nesso options]  `nesso predict` with the defaults below
+#   nesso python [args]                        the image's Python, e.g. for nesso_run.py
+#   nesso exec <command> [args]                any command inside the image
+#   nesso info [--verify]                      which image would run and its build record;
+#                                              --verify recomputes the image's sha256
+#
+# Added to `predict` unless the caller already gives them:
+#   --cache /opt/nesso/cache   the checkpoint, component dictionary and ESM-2 weights in the image
+#   --model_revision <rev>     the weights revision recorded in BUILD_INFO.txt. Without a pin,
+#                              Nesso-1 resolves the revision itself and a re-run months later can
+#                              use re-uploaded weights, producing numbers that no longer match
+#                              the ones already analysed.
+#   --no_kernels               the cuEquivariance kernels are installed but off by default; they
+#                              change the numerics, so turning them on (NESSO_KERNELS=1) means
+#                              re-running a whole set, never part of one.
+#
+# Nothing here reaches the network: the weights are in the image and Hugging Face runs offline.
+#
+# Which image: $NESSO_IMAGE if set, else $NESSO_HOME/current/nesso.sif, with NESSO_HOME taken
+# from site.conf beside this script unless exported.
+# =============================================================================
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=site.conf
+. "$HERE/site.conf"
+IMAGE="${NESSO_IMAGE:-$NESSO_HOME/current/nesso.sif}"
+IMAGE_CACHE=/opt/nesso/cache
+
+die() { echo "nesso: $*" >&2; exit 2; }
+
+usage() { sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+build_info() { echo "$(dirname "$(readlink -f "$IMAGE" 2>/dev/null || echo "$IMAGE")")/BUILD_INFO.txt"; }
+
+info() {
+    local real; real="$(readlink -f "$IMAGE" 2>/dev/null || echo "$IMAGE")"
+    echo "image      : $IMAGE"
+    echo "resolves to: $real"
+    # Report the miss here rather than leaving it to the first `predict`: a caller that asks what
+    # would run deserves a non-zero exit, and a batch job that checks this up front fails before
+    # SLURM has given it a GPU to sit on.
+    if [ ! -r "$IMAGE" ]; then
+        echo "no readable image there; set NESSO_HOME or NESSO_IMAGE (see site.conf beside this" >&2
+        echo "script), or build one with nesso/build_image.sbatch" >&2
+        return 1
+    fi
+    if [ -f "$(build_info)" ]; then
+        echo "--- $(build_info)"
+        cat "$(build_info)"
+    else
+        echo "(no BUILD_INFO.txt beside the image)"
+    fi
+    if [ "${1:-}" = "--verify" ]; then
+        local want got
+        want="$(sed -n 's/^image_sha256 *: *//p' "$(build_info)" 2>/dev/null)"
+        got="$(sha256sum "$real" | cut -d' ' -f1)"
+        echo "sha256 now : $got"
+        [ -n "$want" ] && [ "$want" = "$got" ] && echo "matches BUILD_INFO.txt" && return 0
+        echo "DOES NOT MATCH BUILD_INFO.txt ($want)" >&2; return 1
+    fi
+}
+
+[ $# -ge 1 ] || { usage >&2; exit 2; }
+MODE="$1"; shift
+
+if [ "$MODE" = info ]; then info "${1:-}"; exit $?; fi
+if [ "$MODE" = -h ] || [ "$MODE" = --help ]; then usage; exit 0; fi
+
+command -v apptainer >/dev/null 2>&1 || die "apptainer is not on PATH (on Euler it is /usr/bin/apptainer)"
+[ -r "$IMAGE" ] || die "no readable image at $IMAGE; set NESSO_HOME or NESSO_IMAGE (see site.conf)"
+
+# --- arguments --------------------------------------------------------------------------------
+case "$MODE" in
+    predict)
+        args=() has_cache=0 has_revision=0 has_kernels_flag=0
+        for a in "$@"; do
+            case "$a" in
+                --cache|--cache=*)                   has_cache=1 ;;
+                --model_revision|--model_revision=*) has_revision=1 ;;
+                --no_kernels|--use_kernels)          has_kernels_flag=1 ;;
+            esac
+            args+=("$a")
+        done
+        [ "$has_cache" = 0 ] && args+=(--cache "$IMAGE_CACHE")
+        if [ "$has_revision" = 0 ]; then
+            # Read from BUILD_INFO.txt rather than from inside the image: starting a container
+            # just to cat one file costs seconds on every call.
+            rev="$(sed -n 's/^weights_revision *: *//p' "$(build_info)" 2>/dev/null || true)"
+            [ -n "$rev" ] && args+=(--model_revision "$rev")
+        fi
+        if [ "$has_kernels_flag" = 0 ] && [ "${NESSO_KERNELS:-0}" != "1" ]; then
+            args+=(--no_kernels)
+        fi
+        CMD=(nesso predict "${args[@]}")
+        ;;
+    python) CMD=(python "$@") ;;
+    exec)   [ $# -ge 1 ] || die "exec needs a command"; CMD=("$@") ;;
+    *) usage >&2; die "unknown mode '$MODE'" ;;
+esac
+
+# --- environment inside the image --------------------------------------------------------------
+# --cleanenv keeps the host's module environment (PYTHONPATH, LD_LIBRARY_PATH, ...) out of the
+# image; only the variables below are passed in. CUDA_VISIBLE_DEVICES matters most: without it a
+# job on a multi-GPU node could see, and use, a GPU SLURM gave to someone else. The proxy
+# variables are there for `nesso python` on a LOGIN node, where the preparation steps fetch
+# sequences from UniProt: compute nodes have no route out, but login nodes reach the internet
+# only through the proxy that `module load eth_proxy` sets, and --cleanenv would drop it.
+for v in CUDA_VISIBLE_DEVICES USER LOGNAME TMPDIR OMP_NUM_THREADS TOKENIZERS_PARALLELISM \
+         SLURM_JOB_ID SLURM_ARRAY_JOB_ID SLURM_ARRAY_TASK_ID SLURM_CPUS_PER_TASK \
+         http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY \
+         NESSO_SCRATCH_ROOT NESSO_IMAGE NESSO_HOME; do
+    if [ -n "${!v:-}" ]; then export "APPTAINERENV_$v=${!v}"; fi
+done
+# Writable caches (torch, triton, matplotlib) go to scratch: the image is read-only and home has
+# a small quota.
+RUNTIME_CACHE="${NESSO_RUNTIME_CACHE:-/cluster/scratch/${USER:-unknown}/.cache/nesso}"
+mkdir -p "$RUNTIME_CACHE" 2>/dev/null || RUNTIME_CACHE="${TMPDIR:-/tmp}/nesso-cache-${USER:-unknown}"
+mkdir -p "$RUNTIME_CACHE"
+export APPTAINERENV_XDG_CACHE_HOME="$RUNTIME_CACHE"
+export APPTAINERENV_TRITON_CACHE_DIR="$RUNTIME_CACHE/triton"
+export APPTAINERENV_MPLCONFIGDIR="$RUNTIME_CACHE/matplotlib"
+
+# Euler's Apptainer mounts neither home nor /cluster by default.
+BINDS=()
+[ -d /cluster ] && BINDS+=(--bind /cluster)
+case "${TMPDIR:-/tmp}" in /tmp*|/cluster/*) ;; *) [ -d "$TMPDIR" ] && BINDS+=(--bind "$TMPDIR") ;; esac
+GPU=()
+command -v nvidia-smi >/dev/null 2>&1 && GPU=(--nv)
+
+if [ "$MODE" = predict ]; then
+    echo "nesso: image $(readlink -f "$IMAGE")" >&2
+    echo "nesso: ${CMD[*]}" >&2
+fi
+exec apptainer exec --cleanenv ${GPU[@]+"${GPU[@]}"} ${BINDS[@]+"${BINDS[@]}"} "$IMAGE" "${CMD[@]}"

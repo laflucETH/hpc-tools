@@ -1,0 +1,6 @@
+# macOS directory metadata; never part of a tool.
+.DS_Store
+
+# Python bytecode, written wherever the tests are run (including the cluster checkout).
+__pycache__/
+*.pyc
