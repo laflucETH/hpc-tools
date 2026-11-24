@@ -1,52 +1,22 @@
 # hpc-tools
 
-Small cluster tools shared by several projects. Each project calls the copy here rather than keeping its own, so
-there is one version of each tool to fix and verify.
-
-## Who this is for
-
-These are wrappers around other people's models, written for one cluster: ETH Zurich's Euler. They assume SLURM,
-Apptainer and the `/cluster/...` filesystem layout, so they are published to be read and adapted, not installed.
-
-- **On Euler, in `biol-imsb-beltrao`** — everything works as written. The images are built and readable, and the
-  first step of each tool's README (`nesso/nesso info`, `boltz2 info`) confirms you can see them.
-- **On Euler, in another group** — the code is readable by any Euler account; the built images are not, since they
-  sit under a group-readable path. Build your own with [`nesso/build_image.sbatch`](nesso/build_image.sbatch) or
-  [`boltz2/build_image.sbatch`](boltz2/build_image.sbatch), then point `NESSO_HOME` or `BOLTZ2_HOME` at it — one
-  line in `site.conf`, or an environment variable that overrides it.
-- **On another cluster** — the same two recipes ([`nesso.def`](nesso/nesso.def),
-  [`boltz2.def`](boltz2/boltz2.def)) build the same images wherever Apptainer runs. The submission scripts and
-  `site.conf` carry Euler's partition names, module names and bind paths, so expect to edit those. The drivers
-  (`nesso_run.py`, `boltz2_run.py`) are plain Python and are not cluster-specific.
-
-Paths below name the group's own checkout and image store. They are there so the instructions can be followed
-literally by the people they were written for, not because anything requires those locations.
+Cluster tools shared by several projects, run on ETH Zurich's Euler.
 
 | tool | for |
 |---|---|
+| [`boltz2/`](boltz2/README.md) | predicting structures with Boltz-2 — proteins, complexes, nucleic acids, bound small molecules and binding affinity — from one shared image |
+| [`nesso/`](nesso/README.md) | scoring protein–ligand pairs with Nesso-1 from one shared image |
 | [`archive_run_logs.sh`](#archive_run_logssh) | keeping per-job SLURM logs off a shared file-count quota, and archiving them when a run succeeds |
-| [`boltz2/`](boltz2/README.md) | predicting structures with Boltz-2 on Euler — proteins, complexes, nucleic acids, bound small molecules and binding affinity — from one shared image |
-| [`nesso/`](nesso/README.md) | scoring protein-ligand pairs with Nesso-1 on Euler, at a scale that would otherwise exhaust a file-count quota — from one shared image |
 
-Both `boltz2/` and `nesso/` have a cell-by-cell example notebook under `examples/`, which runs one complete job
-on public example inputs. That is the place to start with either of them.
-
-They exist for the same reason: shared project storage runs out of file-count (inode) quota long before it runs
-out of space, and the things that exhaust it are tools that write one small file per unit of work.
-
-Both answer it a second way as well: each tool is **one Apptainer image the whole group reads**, rather than an
-environment installed per person. A `pip install` of Nesso-1 is 41,358 files; its image is one, so a colleague
-who wants to try it needs no install, no clone and no quota of their own. Being read-only, it also means nobody's
-analysis moves under them because someone else upgraded a package.
+Both `boltz2/` and `nesso/` have a cell-by-cell example notebook under `examples/`, which runs one
+complete job on public example inputs. Start there.
 
 ## `archive_run_logs.sh`
 
-Keeps per-job SLURM logs off the file-count (inode) quota of shared project storage, and archives them when a run
-succeeds.
 - **During a run:** per-job logs and status files go to `/cluster/scratch/$USER/...`.
-- **When a run succeeds:** the logs become one zip in project storage, beside the results, with a manifest listing
-  its members. The originals are deleted only after the zip's member count matches the files on disk and `unzip -t`
-  passes, and then only the files the manifest lists.
+- **When a run succeeds:** the logs become one zip in project storage, beside the results, with a
+  manifest listing its members. The originals are deleted only after the zip's member count
+  matches the files on disk and `unzip -t` passes, and then only the files the manifest lists.
 - **When a run fails:** its logs stay loose on scratch, so they can be searched while debugging.
 
 Modes:
@@ -60,22 +30,26 @@ Modes:
 | `archive-dir <scratch_dir> <dest_dir> [label]` | the same for any plain SLURM log directory on scratch |
 
 Safeguards:
-- **Four directories only:** every path is resolved and refused if it lies outside the account's four Euler
-  directories (`/cluster/home/$USER`, `/cluster/scratch/$USER`, `/cluster/project/beltrao/$USER`,
-  `/cluster/work/beltrao/$USER`).
-- **Scratch sources only:** `archive-dir` archives only from scratch, since it deletes the originals.
-- **`--non-fatal`:** given anywhere on the command line, it makes every failure exit 0 after reporting it. That
-  is for pipeline drivers under `set -e`. A refused or failed step still deletes nothing.
+
+- **Four directories only:** every path is resolved and refused if it lies outside the account's
+  four Euler directories (`/cluster/home/$USER`, `/cluster/scratch/$USER`,
+  `/cluster/project/beltrao/$USER`, `/cluster/work/beltrao/$USER`).
+- **Scratch sources only:** `archive-dir` archives only from scratch, since it deletes the
+  originals.
+- **`--non-fatal`:** given anywhere on the command line, it makes every failure exit 0 after
+  reporting it. That is for pipeline drivers under `set -e`. A refused or failed step still
+  deletes nothing.
 
 Read an archived log with `unzip -p <zip> <member>`. Find a job with `grep <jobid> <manifest>`.
 
-The script's header has the full rationale, what it deliberately does not do, and its verification record.
+The script's header has what it deliberately does not do, and its verification record.
 
-## Using it from a project
+### Calling it from a project
 
-Point the project at this checkout, for example with a config variable, and call the script there; do not copy it.
-On Euler the checkout is `/cluster/project/beltrao/lucla/repos/hpc-tools`, kept fast-forward only like the project
-checkouts. A pipeline driver should treat a failed archive call as a warning, not as a failed run.
+Point the project at this checkout, for example with a config variable, and call the script there;
+do not copy it. On Euler the checkout is `/cluster/project/beltrao/lucla/repos/hpc-tools`, kept
+fast-forward only like the project checkouts. A pipeline driver should treat a failed archive call
+as a warning, not as a failed run.
 
 ## Licence
 

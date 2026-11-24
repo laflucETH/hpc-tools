@@ -1,9 +1,5 @@
 # Boltz-2 on Euler
 
-> Written for ETH Zurich's Euler cluster. If you are not in `biol-imsb-beltrao` there, read
-> [Who this is for](../README.md#who-this-is-for) first — the images named below are readable
-> by that group, and building your own is one job.
-
 Predict the structure of a protein, a complex, or a protein with a bound small molecule, on the
 cluster. Boltz-2 is an open co-folding model: you give it the molecules, it gives you a
 structure, a confidence score and — if you ask — a predicted binding affinity.
@@ -12,29 +8,37 @@ Everything runs from one shared Apptainer image, so there is nothing to install.
 
 ---
 
-## 1. Set up (once per shell)
+## Run the example
 
 ```bash
 TOOL=/cluster/project/beltrao/lucla/repos/hpc-tools/boltz2
 export PATH="$TOOL:$PATH"
-boltz2 info
+boltz2 info                  # prints the image it found
+"$TOOL/check_install.sh"     # check it works before trusting it
 ```
 
-`boltz2 info` prints the image it found. If it prints nothing useful, see
-[If something goes wrong](#if-something-goes-wrong). The commands below reach the scripts
-through `$TOOL`, so they work from any folder.
+If `boltz2 info` prints nothing useful, see [If something goes wrong](#if-something-goes-wrong).
+The commands below reach the scripts through `$TOOL`, so they work from any folder.
 
-Check the installation works before trusting it:
+The worked example is a notebook, [`examples/01_first_run.ipynb`](examples/01_first_run.ipynb).
+Copy it into your home directory and open it at jupyter.euler.hpc.ethz.ch:
 
 ```bash
-"$TOOL/check_install.sh"
+cp /cluster/project/beltrao/lucla/repos/hpc-tools/boltz2/examples/01_first_run.ipynb ~/
 ```
+
+Copy it rather than opening the shared one: JupyterHub can reach the shared copy, but running it
+there would save your outputs into the shared checkout. A session of 1 core and 1 GB is enough —
+the notebook peaked at about 380 MB over two full runs — but JupyterLab also reopens your previous
+tabs, and large files among them can use up 1 GB before the notebook starts. If the session dies
+at startup, ask for 2 GB. Ask for no GPU: the predictions run as their own GPU jobs, so a GPU on
+the session would sit idle. Two hours is plenty.
 
 ---
 
-## 2. Your first run
+## Run your own data
 
-Four commands. They are explained one by one below; this is the whole shape of it.
+Four commands. Each is explained below; this is the whole shape of it.
 
 ```bash
 RUN=/cluster/scratch/$USER/boltz2/myrun
@@ -49,21 +53,6 @@ boltz2 python "$TOOL/boltz2_run.py" finalize \
     --run-dir "$RUN" --dest /cluster/project/beltrao/$USER/results --label myrun   # 4. collect
 ```
 
-There is a worked example you can actually run, as a notebook:
-[`examples/01_first_run.ipynb`](examples/01_first_run.ipynb). Copy it into your home directory
-and open it at jupyter.euler.hpc.ethz.ch:
-
-```bash
-cp /cluster/project/beltrao/lucla/repos/hpc-tools/boltz2/examples/01_first_run.ipynb ~/
-```
-
-Copy it rather than opening the shared one: JupyterHub can reach the shared copy, but running
-it there would save your outputs into the shared checkout. A session of 1 core and 1 GB is
-enough — the notebook peaked at about 380 MB over two full runs — but JupyterLab also reopens your previous tabs,
-and large files among them can use up 1 GB before the notebook starts. If the session dies at
-startup, ask for 2 GB. Ask for no GPU: the predictions run as their own GPU jobs, so a GPU on
-the session would sit idle. Two hours is plenty.
-
 ### Step 1 — alignments
 
 ```bash
@@ -75,16 +64,14 @@ against your protein. Boltz-2 uses it to see which positions are conserved, and 
 biggest factor in how good the prediction is. This step fetches one from the public ColabFold
 server.
 
-It is a separate step because alignments are slow to fetch and completely reusable. The store is
-keyed by the sequence itself, so a protein fetched today is never fetched again — not by this
-run, not by anyone else pointing at the same store. Put the store in project storage and keep it.
+The store is keyed by the sequence itself, so a protein fetched today is never fetched again — not
+by this run, not by anyone else pointing at the same store. Put the store in project storage and
+keep it. Run the step again whenever you add inputs; it only fetches what is missing.
 
 If your input has **more than one different protein chain**, this step also fetches a *paired*
 alignment for that combination, which tells the model which rows of the two chains' alignments
 come from the same organism. That is what makes a complex of two different proteins work
 properly, and it is cached per combination.
-
-Run it again whenever you add inputs; it only fetches what is missing.
 
 ### Step 2 — plan
 
@@ -95,8 +82,8 @@ boltz2 python "$TOOL/boltz2_run.py" plan \
 
 Turns your inputs into a run directory on scratch: alignments filled in, inputs grouped into
 **shards** (one shard = one SLURM array task = one GPU), and the sampling options fixed. Fixing
-them here is what makes scores from different shards comparable with each other — to change
-them, plan a new run.
+them here is what makes scores from different shards comparable with each other — to change them,
+plan a new run.
 
 It also works out what each shard needs from SLURM, and groups shards into **bands** by size:
 
@@ -106,8 +93,8 @@ It also works out what each shard needs from SLURM, and groups shards into **ban
   band <= 800 tokens: array 3-3, gpumem 24g, time 00:10:00  (2 input(s), memory measured)
 ```
 
-A **token** is one residue, or one heavy atom of a ligand. Memory grows roughly with the square
-of the token count, so a run of mostly small complexes should not be charged the memory its three
+A **token** is one residue, or one heavy atom of a ligand. Memory grows roughly with the square of
+the token count, so a run of mostly small complexes should not be charged the memory its three
 biggest need — hence one band each. Inputs that ask for affinity get shards of their own (see
 [Inputs](#inputs) for why).
 
@@ -128,9 +115,9 @@ cat "$RUN/plan/submit.sh"
 bash "$RUN/plan/submit.sh"
 ```
 
-Each task predicts its shard, then collapses the output into one table and one zip and deletes
-the shard's scratch tree — but only if every prediction finished and the archive verifies. **A
-failed shard keeps all of its files**, because that is when you need them.
+Each task predicts its shard, then collapses the output into one table and one zip and deletes the
+shard's scratch tree — but only if every prediction finished and the archive verifies. **A failed
+shard keeps all of its files**, because that is when you need them.
 
 If one band fails for lack of memory or time, edit that band's line in `submit.sh` and run just
 that line again. A shard that already finished exits at once, and Boltz skips predictions that
@@ -146,7 +133,7 @@ boltz2 python "$TOOL/boltz2_run.py" finalize --run-dir "$RUN" \
 Collects everything into project storage. Refuses to run while shards are unfinished, unless you
 pass `--allow-open`.
 
-### Before and after: what does it cost?
+### What a run costs
 
 To estimate a run before planning it — say, to see whether it needs scarce large-memory cards:
 
@@ -161,12 +148,12 @@ python3 "$TOOL/boltz2_run.py" size --from-run "$RUN"
 ```
 
 That one runs with plain `python3`, outside the image, because `sacct` (where SLURM keeps what a
-job used) is not inside the image. For a size nobody has run before, predict one shard first,
-read this back, and put the real numbers into [`sizing.tsv`](sizing.tsv), which says how.
+job used) is not inside the image. For a size nobody has run before, predict one shard first, read
+this back, and put the real numbers into [`sizing.tsv`](sizing.tsv), which says how.
 
 > SLURM cannot measure GPU memory — `sacct` reports host memory only. So a `gpumem` band is only
-> ever confirmed by jobs not failing at it. Raise one only after seeing a real CUDA
-> out-of-memory error, and lower it if jobs never come close.
+> ever confirmed by jobs not failing at it. Raise one only after seeing a real CUDA out-of-memory
+> error, and lower it if jobs never come close.
 
 ---
 
@@ -186,8 +173,8 @@ sequences:
 ```
 
 `msa: auto` means "fill this in from the store" — it is this tool's marker, not a Boltz keyword,
-and `plan` replaces it with a real path. Use `msa: empty` to predict from the single sequence
-with no alignment: much faster, and much less accurate.
+and `plan` replaces it with a real path. Use `msa: empty` to predict from the single sequence with
+no alignment: much faster, and much less accurate.
 
 **A protein with a ligand, and an affinity prediction**
 
@@ -244,13 +231,13 @@ constraints:
   - pocket: {binder: B, contacts: [[A, 12], [A, 41]], max_distance: 6, force: false}
 ```
 
-Residue numbering starts at 1, **counted along the sequence you put in the file** —
-`force: true` makes it a hard restraint instead of a hint.
+Residue numbering starts at 1, **counted along the sequence you put in the file** — `force: true`
+makes it a hard restraint instead of a hint.
 
 > That numbering is a common place to go wrong. A UniProt record is the precursor, signal peptide
-> and all, so its position 12 is usually not position 12 of the mature protein that the
-> literature and the PDB number against. Decide which you want, and number against the sequence
-> actually in your YAML.
+> and all, so its position 12 is usually not position 12 of the mature protein that the literature
+> and the PDB number against. Decide which you want, and number against the sequence actually in
+> your YAML.
 
 Boltz-2 also takes covalent bond constraints, structural templates and modified residues. Those
 are in [the Boltz-2 input documentation](https://github.com/jwohlwend/boltz/blob/v2.2.1/docs/prediction.md);
@@ -310,13 +297,13 @@ One row per input — including inputs that failed, which keep a row saying why.
 | `boltz2:gpu` | which card predicted it |
 
 Each score appears twice: `boltz2:<name>` is the top-ranked sample, and `boltz2:<name>_mean` is
-the mean over all samples. Which columns exist depends on what you predicted — `ligand_iptm`
-only appears if there was a ligand, `affinity_*` only if you asked for affinity.
+the mean over all samples. Which columns exist depends on what you predicted — `ligand_iptm` only
+appears if there was a ligand, `affinity_*` only if you asked for affinity.
 
 ### The structures
 
-In the zips, not loose, because shared storage runs out of **file-count quota** long before it
-runs out of space — one prediction writes about twenty files. Read one out without unpacking:
+In the zips, not loose — one prediction writes about twenty files. Read one out without
+unpacking:
 
 ```bash
 unzip -p myrun_boltz2_shard_0000.zip lysozyme/lysozyme_model_0.cif > lysozyme.cif
@@ -370,9 +357,9 @@ their scores are not strictly comparable. The provenance file names them.
 
 ---
 
-## Moving the image elsewhere
+## Reference
 
-The image is relocatable by design. To move it to a group-wide location:
+**Moving the image.** It is relocatable by design:
 
 ```bash
 cp -a /cluster/work/beltrao/lucla/hpc-tools/boltz2/<release> /new/place/
@@ -387,15 +374,12 @@ BOLTZ2_HOME=/new/place boltz2 info --verify
 
 `current` is a relative symlink, so it survives the move.
 
----
-
-## More
+**Tests.** `python3 -m pytest "$TOOL/test_boltz2_run.py" -q` — they need pytest and PyYAML, not
+Boltz, so any Python with those will do. The image has no pytest by design: it carries the
+reference environment's package list exactly.
 
 - [`VERIFICATION.md`](VERIFICATION.md) — what has actually been tested, with the evidence, and
   what has not.
 - [`sizing.tsv`](sizing.tsv) — the resource bands, each with its provenance.
 - [Boltz-2 input documentation](https://github.com/jwohlwend/boltz/blob/v2.2.1/docs/prediction.md)
   — the full input format. This tool pins Boltz-2 **2.2.1**.
-- Tests: `python3 -m pytest "$TOOL/test_boltz2_run.py" -q` — they need pytest and PyYAML, not Boltz, so
-  any Python with those will do. The image has no pytest by design: it carries the reference
-  environment's package list exactly.
