@@ -18,8 +18,8 @@ nesso/nesso info                                  # confirms you can read the im
 mkdir -p /cluster/scratch/$USER/nesso/slurm       # where your job logs go
 ```
 
-Then open [`examples/01_first_run.ipynb`](examples/01_first_run.ipynb) in Euler's JupyterHub and
-run it cell by cell. It takes **twenty to thirty minutes**, most of it waiting for one GPU job —
+Then open [`examples/01_first_run.ipynb`](examples/01_first_run.ipynb) on Euler and run it cell
+by cell. It takes **twenty to thirty minutes**, most of it waiting for one GPU job —
 9 minutes of prediction on an RTX 3090, 17 on an older TITAN RTX — and does one complete run on
 24 pairs.
 
@@ -29,7 +29,12 @@ is the established inhibitor of one of the four targets, marked in a `cognate` c
 working score has to rank each target's own drug first.
 
 Any Python 3 kernel with `pandas` works. Every call into Nesso-1 is a subprocess into the image,
-so nothing has to be installed into the kernel.
+so nothing has to be installed into the kernel. Give it no GPU: every prediction goes to its own
+`sbatch` job with a GPU of its own.
+
+A kernel on a compute node has no direct internet, so step 1 goes through `module load
+eth_proxy`; `sbatch` is accepted from there, so step 3 submits without dropping back to a login
+node (both checked 2026-11-23, job 22026196).
 
 ### Getting a copy you can edit
 
@@ -47,41 +52,6 @@ export HPC_TOOLS_NESSO_DIR=/cluster/project/beltrao/lucla/repos/hpc-tools/nesso
 ```
 
 `site.conf` travels with the clone, so `nesso/nesso` finds the same image from your copy.
-
-### From your own editor instead of JupyterHub
-
-ETH's [`euler-tunnel`](https://docs.hpc.ethz.ch/connections/euler-tunnel/) submits a batch job
-running an SSH server and tunnels into it, so VS Code's Remote-SSH reaches a **compute node**
-rather than a login node, where computation is not permitted.
-
-```bash
-euler-tunnel config    # prints a ~/.ssh/known_hosts line and a Host block for ~/.ssh/config
-```
-
-Add both on your own machine — on Windows, drop the `Control*` lines. Then per session, from a
-login node:
-
-```bash
-euler-tunnel start --time=04:00:00 --cpus-per-task=2 --mem-per-cpu=4G
-euler-tunnel status
-```
-
-and in VS Code: Remote-SSH, "Connect to Host...", `euler-tunnel`.
-
-**Do not give the tunnel job a GPU.** It runs your editor and the notebook kernel; every
-prediction goes to its own `sbatch` job with its own GPU.
-
-Point the IDE at Euler's module Python, which already carries `ipykernel` and `pandas`:
-
-```bash
-module load stack/2024-06 python/3.11.6 && which python   # paste that path into the IDE
-```
-
-Inside the tunnel job, `module load eth_proxy` gives step 1 a route out to UniProt and PubChem,
-and `sbatch` is accepted, so step 3 submits without dropping back to a login node (both checked
-2026-11-23, job 22026196).
-
----
 
 ## Run your own data
 

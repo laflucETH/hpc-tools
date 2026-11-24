@@ -21,18 +21,16 @@ If `boltz2 info` prints nothing useful, see [If something goes wrong](#if-someth
 The commands below reach the scripts through `$TOOL`, so they work from any folder.
 
 The worked example is a notebook, [`examples/01_first_run.ipynb`](examples/01_first_run.ipynb).
-Copy it into your home directory and open it at jupyter.euler.hpc.ethz.ch:
+Copy it somewhere you can write, then open it on Euler:
 
 ```bash
 cp /cluster/project/beltrao/lucla/repos/hpc-tools/boltz2/examples/01_first_run.ipynb ~/
 ```
 
-Copy it rather than opening the shared one: JupyterHub can reach the shared copy, but running it
-there would save your outputs into the shared checkout. A session of 1 core and 1 GB is enough —
-the notebook peaked at about 380 MB over two full runs — but JupyterLab also reopens your previous
-tabs, and large files among them can use up 1 GB before the notebook starts. If the session dies
-at startup, ask for 2 GB. Ask for no GPU: the predictions run as their own GPU jobs, so a GPU on
-the session would sit idle. Two hours is plenty.
+Run your own copy rather than the shared one, which is not writable by you. The notebook only
+submits jobs and reads their results — it peaked at about 380 MB over two full runs — so whatever
+serves the kernel needs one core, little memory and **no GPU**: the predictions run as their own
+GPU jobs. Two hours is plenty.
 
 ---
 
