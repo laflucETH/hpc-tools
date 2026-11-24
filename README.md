@@ -79,8 +79,8 @@ checkouts. A pipeline driver should treat a failed archive call as a warning, no
 
 ## Licence
 
-MIT, see [`LICENSE`](LICENSE) — copyright (c) 2026 ETH Zurich. That covers the scripts, job
-templates, notebooks and documentation in this repository, and nothing else.
+MIT, see [`LICENSE`](LICENSE). That covers the scripts, job templates, notebooks and
+documentation in this repository, and nothing else.
 
 The tools here are wrappers: they install and run third-party software under its own licence.
 Nesso-1 is Apache-2.0 and Boltz-2 is MIT, both covering code and weights, and both permitting
