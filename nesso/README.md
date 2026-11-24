@@ -1,5 +1,9 @@
 # Nesso-1 on Euler
 
+> Written for ETH Zurich's Euler cluster. If you are not in `biol-imsb-beltrao` there, read
+> [Who this is for](../README.md#who-this-is-for) first — the images named below are readable
+> by that group, and building your own is one job.
+
 [Nesso-1](https://github.com/recursionpharma/nesso) is a coarse-grained cofolding model that
 scores a protein against a small molecule: given a protein sequence and a ligand SMILES it
 returns a predicted binding affinity, a binder/non-binder probability, and an entropy term that

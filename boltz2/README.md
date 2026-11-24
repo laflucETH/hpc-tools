@@ -1,5 +1,9 @@
 # Boltz-2 on Euler
 
+> Written for ETH Zurich's Euler cluster. If you are not in `biol-imsb-beltrao` there, read
+> [Who this is for](../README.md#who-this-is-for) first — the images named below are readable
+> by that group, and building your own is one job.
+
 Predict the structure of a protein, a complex, or a protein with a bound small molecule, on the
 cluster. Boltz-2 is an open co-folding model: you give it the molecules, it gives you a
 structure, a confidence score and — if you ask — a predicted binding affinity.

@@ -3,6 +3,25 @@
 Small cluster tools shared by several projects. Each project calls the copy here rather than keeping its own, so
 there is one version of each tool to fix and verify.
 
+## Who this is for
+
+These are wrappers around other people's models, written for one cluster: ETH Zurich's Euler. They assume SLURM,
+Apptainer and the `/cluster/...` filesystem layout, so they are published to be read and adapted, not installed.
+
+- **On Euler, in `biol-imsb-beltrao`** — everything works as written. The images are built and readable, and the
+  first step of each tool's README (`nesso/nesso info`, `boltz2 info`) confirms you can see them.
+- **On Euler, in another group** — the code is readable by any Euler account; the built images are not, since they
+  sit under a group-readable path. Build your own with [`nesso/build_image.sbatch`](nesso/build_image.sbatch) or
+  [`boltz2/build_image.sbatch`](boltz2/build_image.sbatch), then point `NESSO_HOME` or `BOLTZ2_HOME` at it — one
+  line in `site.conf`, or an environment variable that overrides it.
+- **On another cluster** — the same two recipes ([`nesso.def`](nesso/nesso.def),
+  [`boltz2.def`](boltz2/boltz2.def)) build the same images wherever Apptainer runs. The submission scripts and
+  `site.conf` carry Euler's partition names, module names and bind paths, so expect to edit those. The drivers
+  (`nesso_run.py`, `boltz2_run.py`) are plain Python and are not cluster-specific.
+
+Paths below name the group's own checkout and image store. They are there so the instructions can be followed
+literally by the people they were written for, not because anything requires those locations.
+
 | tool | for |
 |---|---|
 | [`archive_run_logs.sh`](#archive_run_logssh) | keeping per-job SLURM logs off a shared file-count quota, and archiving them when a run succeeds |
